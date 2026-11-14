@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import time
+import uuid
 import datetime
 import argparse
 import ctypes
@@ -36,6 +37,7 @@ from PyQt5.QtWidgets import (
 import mss
 from PIL import Image
 
+DEFAULT_PROJECT_DIR = r"d:\CodingProjects\duggardarshan"
 
 class Shape:
     PEN = "pen"
@@ -57,14 +59,10 @@ class Shape:
 
 
 class BrowseModePill(QWidget):
-    """
-    Compact floating dynamic pill shown while browsing desktop.
-    Allows user to navigate freely, scroll, switch tabs, and click 'Freeze & Mark' when ready.
-    """
     freeze_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, project_name: str = "Duggar Darshan"):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -108,7 +106,7 @@ class BrowseModePill(QWidget):
         frame_layout.setContentsMargins(8, 4, 8, 4)
         frame_layout.setSpacing(10)
 
-        icon_label = QLabel("🌐 Browsing Desktop (Move / Scroll to your site)")
+        icon_label = QLabel(f"🌐 Browsing for {project_name} (Scroll to your page/section)")
         frame_layout.addWidget(icon_label)
 
         btn_freeze = QPushButton("📸 Freeze & Mark (Space)")
@@ -136,24 +134,25 @@ class ScreenMarkerOverlay(QWidget):
     submitted = pyqtSignal(dict)
     cancelled = pyqtSignal()
 
-    def __init__(self, background_pixmap: QPixmap, clean_path: str, output_dir: str):
+    def __init__(self, background_pixmap: QPixmap, clean_path: str, output_dir: str, project_dir: str):
         super().__init__()
         self.background_pixmap = background_pixmap
         self.clean_path = clean_path
         self.output_dir = output_dir
+        self.project_dir = project_dir
+        self.project_name = os.path.basename(os.path.normpath(project_dir)) or "Duggar Darshan"
 
         self.shapes: List[Shape] = []
         self.current_shape: Optional[Shape] = None
         
         # Tools state
         self.current_tool = Shape.PEN
-        self.current_color = QColor(255, 59, 48)  # Vibrant Red
+        self.current_color = QColor(255, 59, 48)  # Red
         self.current_width = 4
         self.is_fullscreen = True
-        self.saved_windowed_geometry = None
         self._window_drag_pos = None
         
-        # Setup Window
+        # Window flags
         self.setWindowFlags(
             Qt.FramelessWindowHint | 
             Qt.WindowStaysOnTopHint | 
@@ -163,8 +162,7 @@ class ScreenMarkerOverlay(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
 
-        # Browse mode pill
-        self.browse_pill = BrowseModePill()
+        self.browse_pill = BrowseModePill(self.project_name)
         self.browse_pill.freeze_requested.connect(self.on_browse_freeze)
         self.browse_pill.cancel_requested.connect(self.cancel)
 
@@ -175,11 +173,11 @@ class ScreenMarkerOverlay(QWidget):
         main_layout.setContentsMargins(16, 12, 16, 16)
         main_layout.setSpacing(10)
 
-        # TOP BAR: Mode, Drag Handle & Window Size controls
+        # TOP BAR
         self.top_bar = QFrame(self)
         self.top_bar.setStyleSheet("""
             QFrame {
-                background-color: rgba(20, 22, 28, 0.92);
+                background-color: rgba(20, 22, 28, 0.94);
                 border: 1px solid rgba(255, 255, 255, 0.16);
                 border-radius: 12px;
                 padding: 4px;
@@ -206,27 +204,25 @@ class ScreenMarkerOverlay(QWidget):
         top_layout.setContentsMargins(8, 4, 8, 4)
         top_layout.setSpacing(8)
 
-        lbl_logo = QLabel("🎨 Screen Marker")
+        lbl_logo = QLabel(f"🎨 Screen Marker ➔ 🎯 Chat Target: {self.project_name}")
+        lbl_logo.setStyleSheet("color: #38BDF8; font-weight: bold;")
         top_layout.addWidget(lbl_logo)
 
-        # Browse desktop button (Pass-through navigation)
-        self.btn_browse = QPushButton("🌐 Browse / Navigate Desktop (Tab)")
-        self.btn_browse.setToolTip("Temporarily hide overlay to click, scroll, switch tabs, or navigate on your desktop.")
+        # Browse desktop button
+        self.btn_browse = QPushButton("🌐 Browse / Scroll Desktop (Tab)")
         self.btn_browse.setStyleSheet("background-color: #2D3748; color: #63B3ED; font-weight: bold;")
         self.btn_browse.clicked.connect(self.enter_browse_mode)
         top_layout.addWidget(self.btn_browse)
 
         # Recapture button
         self.btn_recapture = QPushButton("🔄 Recapture Screen")
-        self.btn_recapture.setToolTip("Grab a fresh screenshot of whatever is currently on your desktop.")
         self.btn_recapture.clicked.connect(self.recapture_screen)
         top_layout.addWidget(self.btn_recapture)
 
         top_layout.addStretch(1)
 
-        # Window Size Toggle: Fullscreen vs Resizable Window
+        # Window Size Toggle
         self.btn_size_toggle = QPushButton("🗗 Resizable Window")
-        self.btn_size_toggle.setToolTip("Toggle between Fullscreen and a Resizable floating window that you can resize and move around.")
         self.btn_size_toggle.clicked.connect(self.toggle_window_mode)
         top_layout.addWidget(self.btn_size_toggle)
 
@@ -238,7 +234,7 @@ class ScreenMarkerOverlay(QWidget):
         main_layout.addWidget(self.top_bar)
         main_layout.addStretch(1)
 
-        # BOTTOM BAR: Drawing tools, colors, instruction prompt
+        # BOTTOM BAR
         self.toolbar_container = QFrame(self)
         self.toolbar_container.setStyleSheet("""
             QFrame {
@@ -283,7 +279,6 @@ class ScreenMarkerOverlay(QWidget):
         tool_layout = QHBoxLayout(self.toolbar_container)
         tool_layout.setSpacing(6)
 
-        # Tool buttons
         self.btn_pen = QPushButton("✏️ Pen")
         self.btn_pen.setCheckable(True)
         self.btn_pen.setChecked(True)
@@ -310,7 +305,6 @@ class ScreenMarkerOverlay(QWidget):
         self.btn_text.clicked.connect(lambda: self.set_tool(Shape.TEXT))
         tool_layout.addWidget(self.btn_text)
 
-        # Colors
         colors = [
             ("🔴", QColor(255, 59, 48)),
             ("🟡", QColor(255, 204, 0)),
@@ -332,14 +326,12 @@ class ScreenMarkerOverlay(QWidget):
         btn_clear.clicked.connect(self.clear_all)
         tool_layout.addWidget(btn_clear)
 
-        # Instruction Input
         self.input_instruction = QLineEdit()
-        self.input_instruction.setPlaceholderText("Describe changes for AI (e.g., 'Make button navy blue, fix margin')...")
+        self.input_instruction.setPlaceholderText(f"Tell AI what to change in {self.project_name} (e.g., 'Make hero button dark blue')...")
         self.input_instruction.returnPressed.connect(self.submit_feedback)
         tool_layout.addWidget(self.input_instruction, stretch=1)
 
-        # Submit button
-        btn_submit = QPushButton("🚀 Send to AI (Enter)")
+        btn_submit = QPushButton(f"🚀 Send to {self.project_name} AI (Enter)")
         btn_submit.setStyleSheet("""
             QPushButton {
                 background-color: #007AFF;
@@ -357,7 +349,6 @@ class ScreenMarkerOverlay(QWidget):
 
         main_layout.addWidget(self.toolbar_container)
 
-        # Bottom right resize grip for windowed mode
         bottom_row = QHBoxLayout()
         bottom_row.addStretch(1)
         self.size_grip = QSizeGrip(self)
@@ -366,14 +357,10 @@ class ScreenMarkerOverlay(QWidget):
         main_layout.addLayout(bottom_row)
 
     def toggle_window_mode(self):
-        """Toggles between Fullscreen and a Resizable floating window."""
         if self.is_fullscreen:
             self.is_fullscreen = False
             self.btn_size_toggle.setText("🔳 Fullscreen")
-            self.btn_size_toggle.setToolTip("Switch back to Fullscreen mode.")
             self.showNormal()
-            
-            # Set comfortable initial windowed size
             app = QApplication.instance()
             if app and app.primaryScreen():
                 geo = app.primaryScreen().geometry()
@@ -388,15 +375,10 @@ class ScreenMarkerOverlay(QWidget):
         else:
             self.is_fullscreen = True
             self.btn_size_toggle.setText("🗗 Resizable Window")
-            self.btn_size_toggle.setToolTip("Switch to Resizable floating window.")
             self.setStyleSheet("border: none;")
             self.showFullScreen()
 
     def enter_browse_mode(self):
-        """
-        Collapses overlay into a small top pill so user has 100% mouse/keyboard control
-        to scroll, navigate, click, or switch tabs freely.
-        """
         self.hide()
         app = QApplication.instance()
         if app and app.primaryScreen():
@@ -408,7 +390,6 @@ class ScreenMarkerOverlay(QWidget):
         self.browse_pill.activateWindow()
 
     def on_browse_freeze(self):
-        """User clicked 'Freeze & Mark' from the browse pill. Recaptures screen and shows overlay."""
         self.browse_pill.hide()
         QApplication.processEvents()
         time.sleep(0.12)
@@ -421,7 +402,6 @@ class ScreenMarkerOverlay(QWidget):
         self.activateWindow()
 
     def recapture_screen(self):
-        """Grabs a brand new screenshot of the current screen."""
         self.hide()
         QApplication.processEvents()
         time.sleep(0.1)
@@ -535,15 +515,12 @@ class ScreenMarkerOverlay(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-        # Draw frozen background
         if not self.background_pixmap.isNull():
             painter.drawPixmap(self.rect(), self.background_pixmap)
 
-        # Draw all finalized shapes
         for shape in self.shapes:
             self._draw_shape(painter, shape)
 
-        # Draw active drawing shape
         if self.current_shape:
             self._draw_shape(painter, self.current_shape)
 
@@ -645,6 +622,7 @@ class ScreenMarkerOverlay(QWidget):
 
         data = {
             "status": "success",
+            "project": self.project_dir,
             "timestamp": timestamp,
             "instruction": user_prompt,
             "annotated_image": os.path.abspath(annotated_path),
@@ -659,9 +637,79 @@ class ScreenMarkerOverlay(QWidget):
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
+        # 1. Write status file to Duggar Darshan project root
+        latest_file = os.path.join(self.project_dir, "LATEST_MARKER_FEEDBACK.md")
+        try:
+            with open(latest_file, "w", encoding="utf-8") as f:
+                f.write(f"""# Latest Screen Marker Feedback ({timestamp})
+- **Project**: {self.project_name}
+- **Instruction**: {user_prompt}
+- **Marked Image**: [{os.path.basename(annotated_path)}]({annotated_path})
+- **Clean Image**: [{os.path.basename(self.clean_path)}]({self.clean_path})
+- **Shapes Count**: {len(self.shapes)}
+""")
+        except Exception as e:
+            print(f"Notice: Failed to write {latest_file}: {e}")
+
+        # 2. Deposit message into Antigravity target chat if detected
+        dispatch_to_antigravity_chats(data, self.project_name)
+
         self.browse_pill.close()
         self.submitted.emit(data)
         self.close()
+
+
+def dispatch_to_antigravity_chats(data: Dict[str, Any], project_name: str):
+    brain_root = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity", "brain")
+    if not os.path.exists(brain_root):
+        return
+
+    target_cids = []
+    for entry in os.listdir(brain_root):
+        conv_dir = os.path.join(brain_root, entry)
+        if not os.path.isdir(conv_dir):
+            continue
+        transcript = os.path.join(conv_dir, ".system_generated", "logs", "transcript.jsonl")
+        if os.path.exists(transcript):
+            try:
+                with open(transcript, "r", encoding="utf-8", errors="ignore") as f:
+                    lines = f.readlines()[-25:]
+                    text = "".join(lines)
+                    if "duggardarshan" in text.lower() or "duggar darsan" in text.lower():
+                        target_cids.append(entry)
+            except Exception:
+                pass
+
+    msg_id = str(uuid.uuid4())
+    msg_content = (
+        f"🎨 [SCREEN MARKER FEEDBACK for {project_name}]\n"
+        f"Instruction: {data.get('instruction', 'Apply visual changes')}\n"
+        f"Annotated Screenshot: {data.get('annotated_image')}\n"
+        f"Clean Screenshot: {data.get('clean_image')}\n"
+        f"Please inspect the marked screenshot and modify the relevant website files ({project_name}) accordingly."
+    )
+
+    for cid in target_cids:
+        inbox_dir = os.path.join(brain_root, cid, ".system_generated", "messages", "undelivered")
+        os.makedirs(inbox_dir, exist_ok=True)
+        msg_payload = {
+            "id": msg_id,
+            "recipient": cid,
+            "sender": "screen-marker",
+            "priority": "MESSAGE_PRIORITY_HIGH",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "renderDetails": {
+                "messageTitle": f"Screen Marker Feedback ({project_name})"
+            },
+            "content": msg_content
+        }
+        msg_file = os.path.join(inbox_dir, f"{msg_id}.json")
+        try:
+            with open(msg_file, "w", encoding="utf-8") as f:
+                json.dump(msg_payload, f, indent=2)
+            print(f"Dispatched feedback to Antigravity chat: {cid}")
+        except Exception as e:
+            print(f"Notice: Failed to drop message in {cid}: {e}")
 
 
 def capture_clean_screen(output_dir: str, app: Optional[QApplication] = None) -> tuple[str, QPixmap]:
@@ -693,9 +741,10 @@ def capture_clean_screen(output_dir: str, app: Optional[QApplication] = None) ->
         raise e
 
 
-def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
+def run_screen_marker(output_dir: Optional[str] = None, project_dir: Optional[str] = None) -> Dict[str, Any]:
+    project_dir = project_dir or DEFAULT_PROJECT_DIR
     if not output_dir:
-        output_dir = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity", "screen_feedback")
+        output_dir = os.path.join(project_dir, "assets", "screen_feedback")
     os.makedirs(output_dir, exist_ok=True)
 
     app = QApplication.instance()
@@ -708,7 +757,7 @@ def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
 
     result_container = {"status": "cancelled"}
 
-    overlay = ScreenMarkerOverlay(pixmap, clean_path, output_dir)
+    overlay = ScreenMarkerOverlay(pixmap, clean_path, output_dir, project_dir)
 
     def on_submitted(data):
         result_container.clear()
@@ -735,9 +784,10 @@ def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live Screen Marker & Visual Feedback Tool")
     parser.add_argument("--output-dir", default=None, help="Directory to save screenshots and feedback")
+    parser.add_argument("--project", default=DEFAULT_PROJECT_DIR, help="Target project root directory")
     args = parser.parse_args()
 
-    result = run_screen_marker(args.output_dir)
+    result = run_screen_marker(args.output_dir, args.project)
     print("---SCREEN_MARKER_RESULT_START---")
     print(json.dumps(result, indent=2))
     print("---SCREEN_MARKER_RESULT_END---")
