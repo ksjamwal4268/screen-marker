@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.png
+*.jpg
+*.jpeg
+*.json
+!SKILL.md
+!requirements.txt
+!README.md
+!scripts/
