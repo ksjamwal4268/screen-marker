@@ -31,10 +31,11 @@ from PyQt5.QtGui import (
 )
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
-    QLineEdit, QLabel, QFrame, QInputDialog, QDesktopWidget
+    QLineEdit, QLabel, QFrame, QInputDialog, QSizeGrip
 )
 import mss
 from PIL import Image
+
 
 class Shape:
     PEN = "pen"
@@ -54,6 +55,83 @@ class Shape:
         self.text: str = ""
         self.text_pos: Optional[QPoint] = None
 
+
+class BrowseModePill(QWidget):
+    """
+    Compact floating dynamic pill shown while browsing desktop.
+    Allows user to navigate freely, scroll, switch tabs, and click 'Freeze & Mark' when ready.
+    """
+    freeze_requested = pyqtSignal()
+    cancel_requested = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(
+            Qt.FramelessWindowHint |
+            Qt.WindowStaysOnTopHint |
+            Qt.Tool
+        )
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self._drag_pos = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+
+        pill_frame = QFrame(self)
+        pill_frame.setStyleSheet("""
+            QFrame {
+                background-color: rgba(18, 20, 26, 0.94);
+                border: 1px solid rgba(0, 122, 255, 0.6);
+                border-radius: 20px;
+                padding: 4px 10px;
+            }
+            QLabel {
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            QPushButton {
+                background-color: #007AFF;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 14px;
+                padding: 6px 14px;
+                font-size: 13px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0056b3;
+            }
+        """)
+
+        frame_layout = QHBoxLayout(pill_frame)
+        frame_layout.setContentsMargins(8, 4, 8, 4)
+        frame_layout.setSpacing(10)
+
+        icon_label = QLabel("🌐 Browsing Desktop (Move / Scroll to your site)")
+        frame_layout.addWidget(icon_label)
+
+        btn_freeze = QPushButton("📸 Freeze & Mark (Space)")
+        btn_freeze.clicked.connect(self.freeze_requested.emit)
+        frame_layout.addWidget(btn_freeze)
+
+        btn_cancel = QPushButton("✖")
+        btn_cancel.setStyleSheet("background-color: rgba(255,255,255,0.12); border-radius: 14px; padding: 6px 10px;")
+        btn_cancel.clicked.connect(self.cancel_requested.emit)
+        frame_layout.addWidget(btn_cancel)
+
+        layout.addWidget(pill_frame)
+        self.adjustSize()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+
+    def mouseMoveEvent(self, event):
+        if self._drag_pos and (event.buttons() & Qt.LeftButton):
+            self.move(event.globalPos() - self._drag_pos)
+
+
 class ScreenMarkerOverlay(QWidget):
     submitted = pyqtSignal(dict)
     cancelled = pyqtSignal()
@@ -71,6 +149,9 @@ class ScreenMarkerOverlay(QWidget):
         self.current_tool = Shape.PEN
         self.current_color = QColor(255, 59, 48)  # Vibrant Red
         self.current_width = 4
+        self.is_fullscreen = True
+        self.saved_windowed_geometry = None
+        self._window_drag_pos = None
         
         # Setup Window
         self.setWindowFlags(
@@ -82,17 +163,86 @@ class ScreenMarkerOverlay(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
 
+        # Browse mode pill
+        self.browse_pill = BrowseModePill()
+        self.browse_pill.freeze_requested.connect(self.on_browse_freeze)
+        self.browse_pill.cancel_requested.connect(self.cancel)
+
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 20)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 12, 16, 16)
+        main_layout.setSpacing(10)
 
-        # Floating Toolbar container
+        # TOP BAR: Mode, Drag Handle & Window Size controls
+        self.top_bar = QFrame(self)
+        self.top_bar.setStyleSheet("""
+            QFrame {
+                background-color: rgba(20, 22, 28, 0.92);
+                border: 1px solid rgba(255, 255, 255, 0.16);
+                border-radius: 12px;
+                padding: 4px;
+            }
+            QPushButton {
+                background-color: rgba(255, 255, 255, 0.10);
+                color: #FFFFFF;
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                border-radius: 8px;
+                padding: 5px 12px;
+                font-size: 12px;
+                font-weight: 500;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 0.22);
+            }
+            QLabel {
+                color: #FFFFFF;
+                font-size: 13px;
+                font-weight: bold;
+            }
+        """)
+        top_layout = QHBoxLayout(self.top_bar)
+        top_layout.setContentsMargins(8, 4, 8, 4)
+        top_layout.setSpacing(8)
+
+        lbl_logo = QLabel("🎨 Screen Marker")
+        top_layout.addWidget(lbl_logo)
+
+        # Browse desktop button (Pass-through navigation)
+        self.btn_browse = QPushButton("🌐 Browse / Navigate Desktop (Tab)")
+        self.btn_browse.setToolTip("Temporarily hide overlay to click, scroll, switch tabs, or navigate on your desktop.")
+        self.btn_browse.setStyleSheet("background-color: #2D3748; color: #63B3ED; font-weight: bold;")
+        self.btn_browse.clicked.connect(self.enter_browse_mode)
+        top_layout.addWidget(self.btn_browse)
+
+        # Recapture button
+        self.btn_recapture = QPushButton("🔄 Recapture Screen")
+        self.btn_recapture.setToolTip("Grab a fresh screenshot of whatever is currently on your desktop.")
+        self.btn_recapture.clicked.connect(self.recapture_screen)
+        top_layout.addWidget(self.btn_recapture)
+
+        top_layout.addStretch(1)
+
+        # Window Size Toggle: Fullscreen vs Resizable Window
+        self.btn_size_toggle = QPushButton("🗗 Resizable Window")
+        self.btn_size_toggle.setToolTip("Toggle between Fullscreen and a Resizable floating window that you can resize and move around.")
+        self.btn_size_toggle.clicked.connect(self.toggle_window_mode)
+        top_layout.addWidget(self.btn_size_toggle)
+
+        btn_top_cancel = QPushButton("✖")
+        btn_top_cancel.setFixedWidth(32)
+        btn_top_cancel.clicked.connect(self.cancel)
+        top_layout.addWidget(btn_top_cancel)
+
+        main_layout.addWidget(self.top_bar)
+        main_layout.addStretch(1)
+
+        # BOTTOM BAR: Drawing tools, colors, instruction prompt
         self.toolbar_container = QFrame(self)
         self.toolbar_container.setStyleSheet("""
             QFrame {
-                background-color: rgba(22, 24, 30, 0.95);
+                background-color: rgba(20, 22, 28, 0.95);
                 border: 1px solid rgba(255, 255, 255, 0.18);
                 border-radius: 14px;
                 padding: 6px;
@@ -102,7 +252,7 @@ class ScreenMarkerOverlay(QWidget):
                 color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 0.12);
                 border-radius: 8px;
-                padding: 6px 14px;
+                padding: 6px 12px;
                 font-size: 13px;
                 font-weight: 500;
             }
@@ -117,7 +267,7 @@ class ScreenMarkerOverlay(QWidget):
                 font-weight: bold;
             }
             QLineEdit {
-                background-color: rgba(0, 0, 0, 0.6);
+                background-color: rgba(0, 0, 0, 0.65);
                 color: #FFFFFF;
                 border: 1px solid rgba(255, 255, 255, 0.25);
                 border-radius: 8px;
@@ -128,20 +278,10 @@ class ScreenMarkerOverlay(QWidget):
             QLineEdit:focus {
                 border: 1px solid #007AFF;
             }
-            QLabel {
-                color: #E0E0E0;
-                font-size: 12px;
-                font-weight: bold;
-            }
         """)
 
         tool_layout = QHBoxLayout(self.toolbar_container)
-        tool_layout.setSpacing(8)
-
-        # Title / Drag hint
-        title = QLabel("🎨 Screen Marker & AI Feedback")
-        title.setStyleSheet("color: #FFFFFF; font-size: 13px; margin-right: 6px;")
-        tool_layout.addWidget(title)
+        tool_layout.setSpacing(6)
 
         # Tool buttons
         self.btn_pen = QPushButton("✏️ Pen")
@@ -170,21 +310,20 @@ class ScreenMarkerOverlay(QWidget):
         self.btn_text.clicked.connect(lambda: self.set_tool(Shape.TEXT))
         tool_layout.addWidget(self.btn_text)
 
-        # Color buttons
+        # Colors
         colors = [
-            ("🔴", QColor(255, 59, 48)),   # Red
-            ("🟡", QColor(255, 204, 0)),   # Yellow
-            ("🔵", QColor(0, 122, 255)),   # Blue
-            ("🟢", QColor(52, 199, 89)),   # Green
-            ("🟣", QColor(175, 82, 222)),  # Purple
+            ("🔴", QColor(255, 59, 48)),
+            ("🟡", QColor(255, 204, 0)),
+            ("🔵", QColor(0, 122, 255)),
+            ("🟢", QColor(52, 199, 89)),
+            ("🟣", QColor(175, 82, 222)),
         ]
         for icon, col in colors:
             btn = QPushButton(icon)
-            btn.setFixedWidth(36)
+            btn.setFixedWidth(34)
             btn.clicked.connect(lambda checked, c=col: self.set_color(c))
             tool_layout.addWidget(btn)
 
-        # Action Buttons: Undo, Clear
         btn_undo = QPushButton("↩️ Undo")
         btn_undo.clicked.connect(self.undo)
         tool_layout.addWidget(btn_undo)
@@ -195,12 +334,12 @@ class ScreenMarkerOverlay(QWidget):
 
         # Instruction Input
         self.input_instruction = QLineEdit()
-        self.input_instruction.setPlaceholderText("Describe changes for AI (e.g., 'Change button to dark blue, fix alignment')...")
+        self.input_instruction.setPlaceholderText("Describe changes for AI (e.g., 'Make button navy blue, fix margin')...")
         self.input_instruction.returnPressed.connect(self.submit_feedback)
         tool_layout.addWidget(self.input_instruction, stretch=1)
 
         # Submit button
-        btn_submit = QPushButton("🚀 Send to AI")
+        btn_submit = QPushButton("🚀 Send to AI (Enter)")
         btn_submit.setStyleSheet("""
             QPushButton {
                 background-color: #007AFF;
@@ -216,16 +355,86 @@ class ScreenMarkerOverlay(QWidget):
         btn_submit.clicked.connect(self.submit_feedback)
         tool_layout.addWidget(btn_submit)
 
-        # Cancel button
-        btn_cancel = QPushButton("✖")
-        btn_cancel.setFixedWidth(36)
-        btn_cancel.setToolTip("Cancel (Esc)")
-        btn_cancel.clicked.connect(self.cancel)
-        tool_layout.addWidget(btn_cancel)
+        main_layout.addWidget(self.toolbar_container)
 
-        # Position toolbar at bottom center
-        layout.addStretch(1)
-        layout.addWidget(self.toolbar_container)
+        # Bottom right resize grip for windowed mode
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch(1)
+        self.size_grip = QSizeGrip(self)
+        self.size_grip.setStyleSheet("width: 16px; height: 16px; background: transparent;")
+        bottom_row.addWidget(self.size_grip)
+        main_layout.addLayout(bottom_row)
+
+    def toggle_window_mode(self):
+        """Toggles between Fullscreen and a Resizable floating window."""
+        if self.is_fullscreen:
+            self.is_fullscreen = False
+            self.btn_size_toggle.setText("🔳 Fullscreen")
+            self.btn_size_toggle.setToolTip("Switch back to Fullscreen mode.")
+            self.showNormal()
+            
+            # Set comfortable initial windowed size
+            app = QApplication.instance()
+            if app and app.primaryScreen():
+                geo = app.primaryScreen().geometry()
+                w = int(geo.width() * 0.82)
+                h = int(geo.height() * 0.82)
+                x = int((geo.width() - w) / 2)
+                y = int((geo.height() - h) / 2)
+                self.setGeometry(x, y, w, h)
+            else:
+                self.resize(1200, 800)
+            self.setStyleSheet("border: 2px solid rgba(0, 122, 255, 0.6);")
+        else:
+            self.is_fullscreen = True
+            self.btn_size_toggle.setText("🗗 Resizable Window")
+            self.btn_size_toggle.setToolTip("Switch to Resizable floating window.")
+            self.setStyleSheet("border: none;")
+            self.showFullScreen()
+
+    def enter_browse_mode(self):
+        """
+        Collapses overlay into a small top pill so user has 100% mouse/keyboard control
+        to scroll, navigate, click, or switch tabs freely.
+        """
+        self.hide()
+        app = QApplication.instance()
+        if app and app.primaryScreen():
+            geo = app.primaryScreen().geometry()
+            px = int((geo.width() - self.browse_pill.width()) / 2)
+            self.browse_pill.move(px, 15)
+        self.browse_pill.show()
+        self.browse_pill.raise_()
+        self.browse_pill.activateWindow()
+
+    def on_browse_freeze(self):
+        """User clicked 'Freeze & Mark' from the browse pill. Recaptures screen and shows overlay."""
+        self.browse_pill.hide()
+        QApplication.processEvents()
+        time.sleep(0.12)
+        self.recapture_screen()
+        if self.is_fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
+    def recapture_screen(self):
+        """Grabs a brand new screenshot of the current screen."""
+        self.hide()
+        QApplication.processEvents()
+        time.sleep(0.1)
+        clean_path, pixmap = capture_clean_screen(self.output_dir, QApplication.instance())
+        self.clean_path = clean_path
+        self.background_pixmap = pixmap
+        if self.is_fullscreen:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        self.update()
 
     def set_tool(self, tool_type: str):
         self.current_tool = tool_type
@@ -234,11 +443,7 @@ class ScreenMarkerOverlay(QWidget):
         self.btn_rect.setChecked(tool_type == Shape.RECT)
         self.btn_arrow.setChecked(tool_type == Shape.ARROW)
         self.btn_text.setChecked(tool_type == Shape.TEXT)
-        
-        if tool_type == Shape.HIGHLIGHT:
-            self.current_width = 24
-        else:
-            self.current_width = 4
+        self.current_width = 24 if tool_type == Shape.HIGHLIGHT else 4
 
     def set_color(self, color: QColor):
         self.current_color = color
@@ -253,12 +458,15 @@ class ScreenMarkerOverlay(QWidget):
         self.update()
 
     def cancel(self):
+        self.browse_pill.close()
         self.cancelled.emit()
         self.close()
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             self.cancel()
+        elif event.key() == Qt.Key_Tab or event.key() == Qt.Key_F2:
+            self.enter_browse_mode()
         elif event.key() == Qt.Key_Z and (event.modifiers() & Qt.ControlModifier):
             self.undo()
         elif event.key() == Qt.Key_Return and not self.input_instruction.hasFocus():
@@ -267,7 +475,11 @@ class ScreenMarkerOverlay(QWidget):
             super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
-        # Don't draw if clicking on the toolbar
+        if self.top_bar.geometry().contains(event.pos()):
+            if event.button() == Qt.LeftButton and not self.is_fullscreen:
+                self._window_drag_pos = event.globalPos() - self.frameGeometry().topLeft()
+            return
+
         if self.toolbar_container.geometry().contains(event.pos()):
             return
 
@@ -284,10 +496,7 @@ class ScreenMarkerOverlay(QWidget):
                 return
 
             color = QColor(self.current_color)
-            if self.current_tool == Shape.HIGHLIGHT:
-                color.setAlpha(90)
-            else:
-                color.setAlpha(255)
+            color.setAlpha(90 if self.current_tool == Shape.HIGHLIGHT else 255)
 
             self.current_shape = Shape(self.current_tool, color, self.current_width)
             self.current_shape.start_point = pos
@@ -297,6 +506,10 @@ class ScreenMarkerOverlay(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event):
+        if self._window_drag_pos and (event.buttons() & Qt.LeftButton) and not self.is_fullscreen:
+            self.move(event.globalPos() - self._window_drag_pos)
+            return
+
         if self.current_shape and (event.buttons() & Qt.LeftButton):
             pos = event.pos()
             self.current_shape.end_point = pos
@@ -307,6 +520,7 @@ class ScreenMarkerOverlay(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        self._window_drag_pos = None
         if event.button() == Qt.LeftButton and self.current_shape:
             pos = event.pos()
             self.current_shape.end_point = pos
@@ -321,15 +535,15 @@ class ScreenMarkerOverlay(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
-        # 1. Draw frozen background
+        # Draw frozen background
         if not self.background_pixmap.isNull():
             painter.drawPixmap(self.rect(), self.background_pixmap)
 
-        # 2. Draw all finalized shapes
+        # Draw all finalized shapes
         for shape in self.shapes:
             self._draw_shape(painter, shape)
 
-        # 3. Draw active drawing shape
+        # Draw active drawing shape
         if self.current_shape:
             self._draw_shape(painter, self.current_shape)
 
@@ -358,7 +572,6 @@ class ScreenMarkerOverlay(QWidget):
                 p2 = shape.end_point
                 painter.drawLine(p1, p2)
                 
-                # Draw arrowhead
                 line = QLineF(p2, p1)
                 angle = line.angle()
                 arrow_size = 18
@@ -384,41 +597,36 @@ class ScreenMarkerOverlay(QWidget):
                 rect = fm.boundingRect(shape.text).adjusted(-8, -4, 8, 4)
                 rect.moveTo(shape.text_pos)
                 
-                # Draw text badge background
                 painter.setBrush(QBrush(QColor(18, 18, 22, 220)))
                 painter.setPen(QPen(shape.color, 1))
                 painter.drawRoundedRect(rect, 6, 6)
                 
-                # Draw text
                 painter.setPen(QPen(Qt.white))
                 painter.drawText(rect, Qt.AlignCenter, shape.text)
 
     def submit_feedback(self):
-        # Hide toolbar to capture pure screenshot + annotations
+        self.top_bar.hide()
         self.toolbar_container.hide()
         QApplication.processEvents()
-        time.sleep(0.05)
+        time.sleep(0.06)
 
-        # Render full annotated image
         annotated_pixmap = QPixmap(self.size())
         annotated_pixmap.fill(Qt.transparent)
         painter = QPainter(annotated_pixmap)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
-        painter.drawPixmap(0, 0, self.background_pixmap)
+        painter.drawPixmap(self.rect(), self.background_pixmap)
 
         for shape in self.shapes:
             self._draw_shape(painter, shape)
         painter.end()
 
-        # Save files
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         annotated_path = os.path.join(self.output_dir, f"marked_screen_{timestamp}.png")
         metadata_path = os.path.join(self.output_dir, f"annotation_{timestamp}.json")
 
         annotated_pixmap.save(annotated_path, "PNG")
 
-        # Serialized shapes data for programmatic inspection
         shapes_data = []
         for s in self.shapes:
             item = {"type": s.shape_type, "color": s.color.name()}
@@ -451,6 +659,7 @@ class ScreenMarkerOverlay(QWidget):
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
+        self.browse_pill.close()
         self.submitted.emit(data)
         self.close()
 
