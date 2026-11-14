@@ -7,6 +7,15 @@ import argparse
 import ctypes
 from typing import List, Dict, Any, Optional
 
+# Attach to interactive user desktop if running in an isolated Windows station/desktop
+try:
+    u32 = ctypes.windll.user32
+    hdesk = u32.OpenDesktopW("default", 0, False, 0x1FF)
+    if hdesk:
+        u32.SetThreadDesktop(hdesk)
+except Exception:
+    pass
+
 # Enable DPI awareness before importing Qt
 try:
     ctypes.windll.shcore.SetProcessDpiAwareness(2)
@@ -67,10 +76,9 @@ class ScreenMarkerOverlay(QWidget):
         self.setWindowFlags(
             Qt.FramelessWindowHint | 
             Qt.WindowStaysOnTopHint | 
-            Qt.SubWindow
+            Qt.Window
         )
         self.setAttribute(Qt.WA_TranslucentBackground, False)
-        self.setWindowState(Qt.WindowFullScreen)
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
 
@@ -314,7 +322,8 @@ class ScreenMarkerOverlay(QWidget):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
 
         # 1. Draw frozen background
-        painter.drawPixmap(0, 0, self.background_pixmap)
+        if not self.background_pixmap.isNull():
+            painter.drawPixmap(self.rect(), self.background_pixmap)
 
         # 2. Draw all finalized shapes
         for shape in self.shapes:
@@ -446,19 +455,33 @@ class ScreenMarkerOverlay(QWidget):
         self.close()
 
 
-def capture_clean_screen(output_dir: str) -> tuple[str, QPixmap]:
+def capture_clean_screen(output_dir: str, app: Optional[QApplication] = None) -> tuple[str, QPixmap]:
     os.makedirs(output_dir, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     clean_path = os.path.join(output_dir, f"clean_screen_{timestamp}.png")
 
-    with mss.mss() as sct:
-        mon = sct.monitors[1]
-        sct_img = sct.grab(mon)
-        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-        img.save(clean_path, "PNG")
+    if app is None:
+        app = QApplication.instance()
 
-    pixmap = QPixmap(clean_path)
-    return clean_path, pixmap
+    if app and app.primaryScreen():
+        pixmap = app.primaryScreen().grabWindow(0)
+        pixmap.save(clean_path, "PNG")
+        return clean_path, pixmap
+
+    try:
+        with mss.mss() as sct:
+            mon = sct.monitors[1]
+            sct_img = sct.grab(mon)
+            img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+            img.save(clean_path, "PNG")
+        pixmap = QPixmap(clean_path)
+        return clean_path, pixmap
+    except Exception as e:
+        if app and app.primaryScreen():
+            pixmap = app.primaryScreen().grabWindow(0)
+            pixmap.save(clean_path, "PNG")
+            return clean_path, pixmap
+        raise e
 
 
 def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
@@ -472,7 +495,7 @@ def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
         QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
         app = QApplication(sys.argv)
 
-    clean_path, pixmap = capture_clean_screen(output_dir)
+    clean_path, pixmap = capture_clean_screen(output_dir, app)
 
     result_container = {"status": "cancelled"}
 
@@ -487,7 +510,12 @@ def run_screen_marker(output_dir: Optional[str] = None) -> Dict[str, Any]:
 
     overlay.submitted.connect(on_submitted)
     overlay.cancelled.connect(on_cancelled)
+    
+    screen = app.primaryScreen()
+    if screen:
+        overlay.setGeometry(screen.geometry())
     overlay.showFullScreen()
+    overlay.show()
     overlay.raise_()
     overlay.activateWindow()
 
