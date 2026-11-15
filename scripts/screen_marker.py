@@ -37,7 +37,6 @@ from PyQt5.QtWidgets import (
 import mss
 from PIL import Image
 
-DEFAULT_PROJECT_DIR = r"d:\CodingProjects\duggardarshan"
 
 class Shape:
     PEN = "pen"
@@ -62,7 +61,7 @@ class BrowseModePill(QWidget):
     freeze_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
 
-    def __init__(self, project_name: str = "Duggar Darshan"):
+    def __init__(self, target_label: str = "This Chat"):
         super().__init__()
         self.setWindowFlags(
             Qt.FramelessWindowHint |
@@ -106,7 +105,7 @@ class BrowseModePill(QWidget):
         frame_layout.setContentsMargins(8, 4, 8, 4)
         frame_layout.setSpacing(10)
 
-        icon_label = QLabel(f"🌐 Browsing for {project_name} (Scroll to your page/section)")
+        icon_label = QLabel(f"🌐 Browsing Desktop (Scroll / Navigate) ➔ Destination: {target_label}")
         frame_layout.addWidget(icon_label)
 
         btn_freeze = QPushButton("📸 Freeze & Mark (Space)")
@@ -134,13 +133,21 @@ class ScreenMarkerOverlay(QWidget):
     submitted = pyqtSignal(dict)
     cancelled = pyqtSignal()
 
-    def __init__(self, background_pixmap: QPixmap, clean_path: str, output_dir: str, project_dir: str):
+    def __init__(self, background_pixmap: QPixmap, clean_path: str, output_dir: str, 
+                 caller_chat: Optional[str] = None, project_dir: Optional[str] = None):
         super().__init__()
         self.background_pixmap = background_pixmap
         self.clean_path = clean_path
         self.output_dir = output_dir
+        self.caller_chat = caller_chat
         self.project_dir = project_dir
-        self.project_name = os.path.basename(os.path.normpath(project_dir)) or "Duggar Darshan"
+
+        if self.caller_chat:
+            self.target_label = f"Active Chat ({self.caller_chat[:8]}...)"
+        elif self.project_dir:
+            self.target_label = os.path.basename(os.path.normpath(self.project_dir))
+        else:
+            self.target_label = "Current Chat Session"
 
         self.shapes: List[Shape] = []
         self.current_shape: Optional[Shape] = None
@@ -152,7 +159,7 @@ class ScreenMarkerOverlay(QWidget):
         self.is_fullscreen = True
         self._window_drag_pos = None
         
-        # Window flags
+        # Window setup
         self.setWindowFlags(
             Qt.FramelessWindowHint | 
             Qt.WindowStaysOnTopHint | 
@@ -162,7 +169,7 @@ class ScreenMarkerOverlay(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CrossCursor)
 
-        self.browse_pill = BrowseModePill(self.project_name)
+        self.browse_pill = BrowseModePill(self.target_label)
         self.browse_pill.freeze_requested.connect(self.on_browse_freeze)
         self.browse_pill.cancel_requested.connect(self.cancel)
 
@@ -204,7 +211,7 @@ class ScreenMarkerOverlay(QWidget):
         top_layout.setContentsMargins(8, 4, 8, 4)
         top_layout.setSpacing(8)
 
-        lbl_logo = QLabel(f"🎨 Screen Marker ➔ 🎯 Chat Target: {self.project_name}")
+        lbl_logo = QLabel(f"🎨 Screen Marker ➔ 💬 Destination: {self.target_label} only")
         lbl_logo.setStyleSheet("color: #38BDF8; font-weight: bold;")
         top_layout.addWidget(lbl_logo)
 
@@ -327,11 +334,11 @@ class ScreenMarkerOverlay(QWidget):
         tool_layout.addWidget(btn_clear)
 
         self.input_instruction = QLineEdit()
-        self.input_instruction.setPlaceholderText(f"Tell AI what to change in {self.project_name} (e.g., 'Make hero button dark blue')...")
+        self.input_instruction.setPlaceholderText("Describe changes for AI in this chat (e.g., 'Make button navy blue, fix alignment')...")
         self.input_instruction.returnPressed.connect(self.submit_feedback)
         tool_layout.addWidget(self.input_instruction, stretch=1)
 
-        btn_submit = QPushButton(f"🚀 Send to {self.project_name} AI (Enter)")
+        btn_submit = QPushButton("🚀 Send to This Chat (Enter)")
         btn_submit.setStyleSheet("""
             QPushButton {
                 background-color: #007AFF;
@@ -622,6 +629,7 @@ class ScreenMarkerOverlay(QWidget):
 
         data = {
             "status": "success",
+            "caller_chat": self.caller_chat,
             "project": self.project_dir,
             "timestamp": timestamp,
             "instruction": user_prompt,
@@ -637,79 +645,70 @@ class ScreenMarkerOverlay(QWidget):
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
 
-        # 1. Write status file to Duggar Darshan project root
-        latest_file = os.path.join(self.project_dir, "LATEST_MARKER_FEEDBACK.md")
-        try:
-            with open(latest_file, "w", encoding="utf-8") as f:
-                f.write(f"""# Latest Screen Marker Feedback ({timestamp})
-- **Project**: {self.project_name}
-- **Instruction**: {user_prompt}
-- **Marked Image**: [{os.path.basename(annotated_path)}]({annotated_path})
-- **Clean Image**: [{os.path.basename(self.clean_path)}]({self.clean_path})
-- **Shapes Count**: {len(self.shapes)}
-""")
-        except Exception as e:
-            print(f"Notice: Failed to write {latest_file}: {e}")
-
-        # 2. Deposit message into Antigravity target chat if detected
-        dispatch_to_antigravity_chats(data, self.project_name)
+        # Deliver to the exact caller chat only
+        deliver_to_specific_chat(data, self.caller_chat, self.project_dir)
 
         self.browse_pill.close()
         self.submitted.emit(data)
         self.close()
 
 
-def dispatch_to_antigravity_chats(data: Dict[str, Any], project_name: str):
+def deliver_to_specific_chat(data: Dict[str, Any], caller_chat: Optional[str], project_dir: Optional[str]):
     brain_root = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity", "brain")
     if not os.path.exists(brain_root):
         return
 
-    target_cids = []
-    for entry in os.listdir(brain_root):
-        conv_dir = os.path.join(brain_root, entry)
-        if not os.path.isdir(conv_dir):
-            continue
-        transcript = os.path.join(conv_dir, ".system_generated", "logs", "transcript.jsonl")
-        if os.path.exists(transcript):
-            try:
-                with open(transcript, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()[-25:]
-                    text = "".join(lines)
-                    if "duggardarshan" in text.lower() or "duggar darsan" in text.lower():
-                        target_cids.append(entry)
-            except Exception:
-                pass
+    target_cid = caller_chat
 
+    # If no caller chat specified, find the single most recently active chat
+    if not target_cid:
+        best_cid = None
+        best_time = 0
+        for entry in os.listdir(brain_root):
+            conv_dir = os.path.join(brain_root, entry)
+            transcript = os.path.join(conv_dir, ".system_generated", "logs", "transcript.jsonl")
+            if os.path.exists(transcript):
+                try:
+                    mtime = os.path.getmtime(transcript)
+                    if mtime > best_time:
+                        best_time = mtime
+                        best_cid = entry
+                except Exception:
+                    pass
+        target_cid = best_cid
+
+    if not target_cid:
+        return
+
+    inbox_dir = os.path.join(brain_root, target_cid, ".system_generated", "messages", "undelivered")
+    os.makedirs(inbox_dir, exist_ok=True)
     msg_id = str(uuid.uuid4())
-    msg_content = (
-        f"🎨 [SCREEN MARKER FEEDBACK for {project_name}]\n"
-        f"Instruction: {data.get('instruction', 'Apply visual changes')}\n"
-        f"Annotated Screenshot: {data.get('annotated_image')}\n"
-        f"Clean Screenshot: {data.get('clean_image')}\n"
-        f"Please inspect the marked screenshot and modify the relevant website files ({project_name}) accordingly."
-    )
-
-    for cid in target_cids:
-        inbox_dir = os.path.join(brain_root, cid, ".system_generated", "messages", "undelivered")
-        os.makedirs(inbox_dir, exist_ok=True)
-        msg_payload = {
-            "id": msg_id,
-            "recipient": cid,
-            "sender": "screen-marker",
-            "priority": "MESSAGE_PRIORITY_HIGH",
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "renderDetails": {
-                "messageTitle": f"Screen Marker Feedback ({project_name})"
-            },
-            "content": msg_content
-        }
-        msg_file = os.path.join(inbox_dir, f"{msg_id}.json")
-        try:
-            with open(msg_file, "w", encoding="utf-8") as f:
-                json.dump(msg_payload, f, indent=2)
-            print(f"Dispatched feedback to Antigravity chat: {cid}")
-        except Exception as e:
-            print(f"Notice: Failed to drop message in {cid}: {e}")
+    msg_payload = {
+        "id": msg_id,
+        "recipient": target_cid,
+        "sender": "screen-marker",
+        "priority": "MESSAGE_PRIORITY_HIGH",
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "renderDetails": {
+            "messageTitle": "Screen Marker Feedback Submitted"
+        },
+        "content": (
+            f"🎨 [SCREEN MARKER FEEDBACK for chat {target_cid}]\n"
+            f"Instruction: {data.get('instruction', 'Apply visual changes')}\n"
+            f"Annotated Screenshot: {data.get('annotated_image')}\n"
+            f"Clean Screenshot: {data.get('clean_image')}\n"
+            f"Metadata File: {data.get('metadata_file')}\n"
+            f"Shapes Count: {data.get('shapes_count')}\n"
+            "Please read the annotated screenshot and execute the requested UI/code changes in this project now."
+        )
+    }
+    msg_file = os.path.join(inbox_dir, f"{msg_id}.json")
+    try:
+        with open(msg_file, "w", encoding="utf-8") as f:
+            json.dump(msg_payload, f, indent=2)
+        print(f"Delivered feedback directly to chat: {target_cid}")
+    except Exception as e:
+        print(f"Notice: Failed to drop message in {target_cid}: {e}")
 
 
 def capture_clean_screen(output_dir: str, app: Optional[QApplication] = None) -> tuple[str, QPixmap]:
@@ -741,10 +740,13 @@ def capture_clean_screen(output_dir: str, app: Optional[QApplication] = None) ->
         raise e
 
 
-def run_screen_marker(output_dir: Optional[str] = None, project_dir: Optional[str] = None) -> Dict[str, Any]:
-    project_dir = project_dir or DEFAULT_PROJECT_DIR
+def run_screen_marker(output_dir: Optional[str] = None, caller_chat: Optional[str] = None,
+                      project_dir: Optional[str] = None) -> Dict[str, Any]:
     if not output_dir:
-        output_dir = os.path.join(project_dir, "assets", "screen_feedback")
+        if project_dir and os.path.exists(project_dir):
+            output_dir = os.path.join(project_dir, "assets", "screen_feedback")
+        else:
+            output_dir = os.path.join(os.path.expanduser("~"), ".gemini", "antigravity", "screen_feedback")
     os.makedirs(output_dir, exist_ok=True)
 
     app = QApplication.instance()
@@ -757,7 +759,7 @@ def run_screen_marker(output_dir: Optional[str] = None, project_dir: Optional[st
 
     result_container = {"status": "cancelled"}
 
-    overlay = ScreenMarkerOverlay(pixmap, clean_path, output_dir, project_dir)
+    overlay = ScreenMarkerOverlay(pixmap, clean_path, output_dir, caller_chat, project_dir)
 
     def on_submitted(data):
         result_container.clear()
@@ -784,10 +786,11 @@ def run_screen_marker(output_dir: Optional[str] = None, project_dir: Optional[st
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Live Screen Marker & Visual Feedback Tool")
     parser.add_argument("--output-dir", default=None, help="Directory to save screenshots and feedback")
-    parser.add_argument("--project", default=DEFAULT_PROJECT_DIR, help="Target project root directory")
+    parser.add_argument("--caller-chat", default=None, help="Specific Antigravity Conversation ID to route feedback to")
+    parser.add_argument("--project", default=None, help="Target project root directory")
     args = parser.parse_args()
 
-    result = run_screen_marker(args.output_dir, args.project)
+    result = run_screen_marker(args.output_dir, args.caller_chat, args.project)
     print("---SCREEN_MARKER_RESULT_START---")
     print(json.dumps(result, indent=2))
     print("---SCREEN_MARKER_RESULT_END---")
