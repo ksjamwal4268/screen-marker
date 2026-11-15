@@ -1,6 +1,6 @@
 # Screen Marker & Visual Feedback Skill for Antigravity
 
-An interactive live screen-annotation and visual feedback skill designed for Antigravity AI agents.
+An interactive live screen-annotation and visual feedback tool designed for Antigravity AI agents.
 
 Freeze your active display, mark up bugs, alignment issues, or desired design changes with highlighters, bounding boxes, arrows, or freehand drawing, type your instructions, and let your AI agent inspect the visual annotations and automatically implement the changes in your codebase.
 
@@ -13,6 +13,10 @@ Freeze your active display, mark up bugs, alignment issues, or desired design ch
 - 🔲 **Bounding Box**: Frame components, buttons, navigation bars, or modals.
 - ➡️ **Directional Arrow**: Point directly to elements needing changes.
 - 🔤 **Text Note**: Drop custom text badges anywhere on screen.
+- 🌐 **Browse Desktop Mode (`Tab` / `F2`)**: Collapses into a floating pill so you can freely scroll, navigate, or switch tabs, then press `Space` to freeze and mark.
+- 🗗 **Resizable Window Mode**: Switch between Fullscreen and a resizable, draggable floating window.
+- 🔄 **Live Recapture**: Instantly refresh the screenshot without restarting the tool.
+- 🎯 **Targeted Chat Routing**: Feedback is returned strictly to the chat session where the command was issued.
 - 🎨 **Color Palette**: Instant switching between Red, Yellow, Blue, Green, and Purple.
 - ↩️ **Undo / Clear**: `Ctrl+Z` support and canvas clearing.
 - 💬 **Instruction Bar**: Enter prompts like *"Make this button navy blue and align it to the right"*.
@@ -33,20 +37,20 @@ Freeze your active display, mark up bugs, alignment issues, or desired design ch
 
 ## Usage with Antigravity Agent
 
-Whenever you want to modify a website or desktop app, ask your agent:
-> *"Let me mark on my screen what I want to change on this page."*
-> or
-> *"Open the screen marker."*
+Whenever you want to modify a website or desktop app, simply type in your chat:
+> **`/screen`** or **`/screen show`** or **`/screen-marker`**
 
 The agent will execute:
 ```bash
-python scripts/screen_marker.py
+python scripts/screen_marker.py --caller-chat "<CURRENT_CONVERSATION_ID>"
 ```
-And upon submitting, the agent will:
-1. Read the marked screenshot and the exact shape coordinates.
-2. Read your instruction prompt.
-3. Locate the corresponding code in your workspace.
-4. Apply the modifications and verify the result.
+
+### What Happens:
+1. The overlay opens on your screen.
+2. You can navigate/scroll (`Tab`), freeze (`Space`), and mark what to change.
+3. You type your instruction and press `Enter`.
+4. The marked screenshot and prompt are delivered **directly into that chat session**.
+5. The AI agent inspects your markings and automatically modifies the code in your workspace.
 
 ---
 
